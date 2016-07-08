@@ -30,14 +30,12 @@ import (
 	"github.com/uber/tchannel-go/thrift"
 	"golang.org/x/net/context"
 
-	"github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/crossdock/thrift/tracetest"
 )
 
-func (s *Server) startTChannelServer() error {
-	var traceSampleRate float64
+func (s *Server) startTChannelServer(tracer opentracing.Tracer) error {
 	channelOpts := &tchannel.ChannelOptions{
-		TraceSampleRate: &traceSampleRate,
+		Tracer: tracer,
 	}
 	ch, err := tchannel.NewChannel("go", channelOpts)
 	if err != nil {
@@ -66,8 +64,7 @@ func (s *Server) StartTrace(ctx thrift.Context, request *tracetest.StartTraceReq
 // JoinTrace implements JoinTrace() of TChanTracedService
 func (s *Server) JoinTrace(ctx thrift.Context, request *tracetest.JoinTraceRequest) (*tracetest.TraceResponse, error) {
 	log.Printf("tchannel server handling JoinTrace")
-	ctx2 := setupOpenTracingContext(s.Tracer, ctx, "tchannel", ctx.Headers())
-	return s.prepareResponse(ctx2, request.ServerRole, request.Downstream)
+	return s.prepareResponse(ctx, request.ServerRole, request.Downstream)
 }
 
 func (s *Server) callDownstreamTChannel(ctx context.Context, target *tracetest.Downstream) (*tracetest.TraceResponse, error) {
@@ -79,7 +76,10 @@ func (s *Server) callDownstreamTChannel(ctx context.Context, target *tracetest.D
 	hostPort := fmt.Sprintf("%s:%s", target.Host, target.Port)
 	log.Printf("calling downstream '%s' over tchannel:%s", target.ServiceName, hostPort)
 
-	ch, err := tchannel.NewChannel("tchannel-client", nil)
+	channelOpts := &tchannel.ChannelOptions{
+		Tracer: s.Tracer,
+	}
+	ch, err := tchannel.NewChannel("tchannel-client", channelOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -88,70 +88,7 @@ func (s *Server) callDownstreamTChannel(ctx context.Context, target *tracetest.D
 	thriftClient := thrift.NewClient(ch, target.ServiceName, opts)
 
 	client := tracetest.NewTChanTracedServiceClient(thriftClient)
-
-	// Manual bridging of OpenTracing Span into TChannel Span
-	tCtx, cx := WrapContext(ctx, time.Second)
+	ctx, cx := context.WithTimeout(ctx, time.Second)
 	defer cx()
-
-	return client.JoinTrace(tCtx, req)
-}
-
-// WrapContext takes a regular `net.Context` and converts it into `thrift.Context` suitable
-// for outbound calls to TChannel servers.  If the input context contains a OpoenTracing span,
-// that span is converted to TChannel-compatible Span.
-func WrapContext(ctx context.Context, timeout time.Duration) (thrift.Context, context.CancelFunc) {
-	builder := tchannel.NewContextBuilder(timeout)
-	convertOpenTracingSpan(ctx, builder)
-	return builder.Build()
-}
-
-// convertOpenTracingSpan extracts an OpenTracing Span from the context and converts it
-// into TChannel Span representation, so that it is used by the outbound TChannel call
-// to create a child span.
-//
-// Once TChannel supports OpenTracing API directly, this bridging will not be required.
-func convertOpenTracingSpan(ctx context.Context, builder *tchannel.ContextBuilder) {
-	span := opentracing.SpanFromContext(ctx)
-	if span == nil {
-		return
-	}
-	carrier := &jaeger.TraceContextCarrier{}
-	if err := span.Tracer().Inject(span, jaeger.TraceContextFormat, carrier); err != nil {
-		return
-	}
-	sc := carrier.TraceContext
-	builder.SetExternalSpan(sc.TraceID(), sc.SpanID(), sc.ParentID(), sc.IsSampled())
-	for k, v := range carrier.Baggage {
-		builder.AddHeader(k, v)
-	}
-}
-
-// setupOpenTracingContext extracts a TChannel tracing Span from the context, converts
-// it into OpenTracing Span, and returns a thrift.Context containing both spans.
-// This allows the returned thrift.Context to be used for both TChannel and HTTP
-// outbound calls and still maintain uninterrupted trace.
-//
-// If `tracer` is nil, `opentracing.GlobalTracer()` is used.
-//
-// Note that we never call finish() on the OpenTracing span, because it is actually a double
-// of the real inbound TChannel Span, which will be reported to Jaeger. The new OpenTracing
-// span is used merely to allow creating children spans from it.
-//
-// Once TChannel supports OpenTracing API directly, this bridging will not be required.
-//
-func setupOpenTracingContext(tracer opentracing.Tracer, ctx context.Context, method string, headers map[string]string) thrift.Context {
-	tSpan := tchannel.CurrentSpan(ctx)
-	if tSpan != nil {
-		// populate a fake carrier and try to create OpenTracing Span
-		carrier := &jaeger.TraceContextCarrier{Baggage: headers}
-		carrier.TraceContext = *jaeger.NewTraceContext(
-			tSpan.TraceID(), tSpan.SpanID(), tSpan.ParentID(), tSpan.TracingEnabled())
-		if tracer == nil {
-			tracer = opentracing.GlobalTracer()
-		}
-		if span, err := tracer.Join(method, jaeger.TraceContextFormat, carrier); err == nil {
-			ctx = opentracing.ContextWithSpan(ctx, span)
-		}
-	}
-	return thrift.WithHeaders(ctx, headers)
+	return client.JoinTrace(thrift.Wrap(ctx), req)
 }

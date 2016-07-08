@@ -180,20 +180,6 @@ func (s *reporterSuite) TestTagsAndEvents() {
 	s.EqualValues(256, len(longStr.Value), "long tag valur must be truncated")
 }
 
-func TestTCollectorReporter(t *testing.T) {
-	collector, err := testutils.StartMockTCollector()
-	require.NoError(t, err)
-	defer collector.Close()
-
-	testRemoteReporter(t,
-		func(m *Metrics) (transport.Transport, error) {
-			return tchannel.New(collector.Channel, "", 0), nil
-		},
-		func() []*z.Span {
-			return collector.GetZipkinSpans()
-		})
-}
-
 func TestUDPReporter(t *testing.T) {
 	agent, err := testutils.StartMockAgent()
 	require.NoError(t, err)
