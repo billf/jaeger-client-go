@@ -1,5 +1,5 @@
-hash: 6357a0a7292615576eda928aceaf21a65270ee320e482ae4860e6faa8a1616ec
-updated: 2016-07-09T14:23:14.733187191-04:00
+hash: fe1acb17f7088de8acad948858c27610986a1145409c3da7727d5ba415639f75
+updated: 2016-07-09T20:55:12.591512474-04:00
 imports:
 - name: github.com/apache/thrift
   version: 23d6746079d7b5fdb38214387c63f987e68a6d8f
@@ -28,7 +28,7 @@ imports:
 - name: github.com/uber-go/atomic
   version: e682c1008ac17bf26d2e4b5ad6cdd08520ed0b22
 - name: github.com/uber/tchannel-go
-  version: 86ee2b2f880b5b1b5d34564dc1e1bb7492437e7f
+  version: f3d41bc853ca7cd7e1007db5495cd9cd5e32a673
   subpackages:
   - atomic
   - thrift
