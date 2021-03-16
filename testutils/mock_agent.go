@@ -1,39 +1,34 @@
-// Copyright (c) 2016 Uber Technologies, Inc.
+// Copyright (c) 2017 Uber Technologies, Inc.
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
+// http://www.apache.org/licenses/LICENSE-2.0
 //
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package testutils
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 
+	"github.com/uber/jaeger-client-go/thrift"
+
 	"github.com/uber/jaeger-client-go/thrift-gen/agent"
-	"github.com/uber/jaeger-client-go/thrift-gen/sampling"
+	"github.com/uber/jaeger-client-go/thrift-gen/jaeger"
 	"github.com/uber/jaeger-client-go/thrift-gen/zipkincore"
 	"github.com/uber/jaeger-client-go/utils"
-
-	"github.com/apache/thrift/lib/go/thrift"
 )
 
 // StartMockAgent runs a mock representation of jaeger-agent.
@@ -72,12 +67,12 @@ func (s *MockAgent) Close() {
 // MockAgent is a mock representation of Jaeger Agent.
 // It receives spans over UDP, and has an HTTP endpoint for sampling strategies.
 type MockAgent struct {
-	transport   *TUDPTransport
-	zipkinSpans []*zipkincore.Span
-	mutex       sync.Mutex
-	serving     uint32
-	samplingMgr *samplingManager
-	samplingSrv *httptest.Server
+	transport     *TUDPTransport
+	jaegerBatches []*jaeger.Batch
+	mutex         sync.Mutex
+	serving       uint32
+	samplingMgr   *samplingManager
+	samplingSrv   *httptest.Server
 }
 
 // SpanServerAddr returns the UDP host:port where MockAgent listens for spans
@@ -113,11 +108,25 @@ func (s *MockAgent) serve(started *sync.WaitGroup) {
 	}
 }
 
-// EmitZipkinBatch implements EmitZipkinBatch() of TChanSamplingManagerServer
+// EmitZipkinBatch is deprecated, use EmitBatch
 func (s *MockAgent) EmitZipkinBatch(spans []*zipkincore.Span) (err error) {
+	// TODO remove this for 3.0.0
+	return errors.New("Not implemented")
+}
+
+// GetZipkinSpans is deprecated use GetJaegerBatches
+func (s *MockAgent) GetZipkinSpans() []*zipkincore.Span {
+	return nil
+}
+
+// ResetZipkinSpans is deprecated use ResetJaegerBatches
+func (s *MockAgent) ResetZipkinSpans() {}
+
+// EmitBatch implements EmitBatch() of TChanSamplingManagerServer
+func (s *MockAgent) EmitBatch(batch *jaeger.Batch) (err error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.zipkinSpans = append(s.zipkinSpans, spans...)
+	s.jaegerBatches = append(s.jaegerBatches, batch)
 	return err
 }
 
@@ -127,25 +136,25 @@ func (s *MockAgent) IsServing() bool {
 }
 
 // AddSamplingStrategy registers a sampling strategy for a service
-func (s *MockAgent) AddSamplingStrategy(service string, strategy *sampling.SamplingStrategyResponse) {
+func (s *MockAgent) AddSamplingStrategy(service string, strategy interface{}) {
 	s.samplingMgr.AddSamplingStrategy(service, strategy)
 }
 
-// GetZipkinSpans returns accumulated Zipkin spans
-func (s *MockAgent) GetZipkinSpans() []*zipkincore.Span {
+// GetJaegerBatches returns accumulated Jaeger batches
+func (s *MockAgent) GetJaegerBatches() []*jaeger.Batch {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	n := len(s.zipkinSpans)
-	spans := make([]*zipkincore.Span, n, n)
-	copy(spans, s.zipkinSpans)
-	return spans
+	n := len(s.jaegerBatches)
+	batches := make([]*jaeger.Batch, n, n)
+	copy(batches, s.jaegerBatches)
+	return batches
 }
 
-// ResetZipkinSpans discards accumulated Zipkin spans
-func (s *MockAgent) ResetZipkinSpans() {
+// ResetJaegerBatches discards accumulated Jaeger batches
+func (s *MockAgent) ResetJaegerBatches() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.zipkinSpans = nil
+	s.jaegerBatches = nil
 }
 
 type samplingHandler struct {

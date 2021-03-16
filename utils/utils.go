@@ -1,30 +1,26 @@
-// Copyright (c) 2016 Uber Technologies, Inc.
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
+// Copyright (c) 2017 Uber Technologies, Inc.
 //
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package utils
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -38,27 +34,8 @@ var (
 	ErrNotFourOctets = errors.New("Wrong number of octets")
 )
 
-// GetLocalIP returns the IP of the host, preferring public over loopback.
-func GetLocalIP() net.IP {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return net.IPv4(127, 0, 0, 1)
-	}
-
-	for _, address := range addrs {
-		// check the address type and if it is not a loopback the display it
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP
-			}
-		}
-	}
-
-	return net.IPv4(127, 0, 0, 1)
-}
-
-// IPToUint32 converts a string ip to an uint32
-func IPToUint32(ip string) (uint32, error) {
+// ParseIPToUint32 converts a string ip (e.g. "x.y.z.w") to an uint32
+func ParseIPToUint32(ip string) (uint32, error) {
 	if ip == "" {
 		return 0, ErrEmptyIP
 	}
@@ -88,4 +65,23 @@ func IPToUint32(ip string) (uint32, error) {
 func ParsePort(portString string) (uint16, error) {
 	port, err := strconv.ParseUint(portString, 10, 16)
 	return uint16(port), err
+}
+
+// PackIPAsUint32 packs an IPv4 as uint32
+func PackIPAsUint32(ip net.IP) uint32 {
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return binary.BigEndian.Uint32(ipv4)
+	}
+	return 0
+}
+
+// TimeToMicrosecondsSinceEpochInt64 converts Go time.Time to a long
+// representing time since epoch in microseconds, which is used expected
+// in the Jaeger spans encoded as Thrift.
+func TimeToMicrosecondsSinceEpochInt64(t time.Time) int64 {
+	// ^^^ Passing time.Time by value is faster than passing a pointer!
+	// BenchmarkTimeByValue-8	2000000000	         1.37 ns/op
+	// BenchmarkTimeByPtr-8  	2000000000	         1.98 ns/op
+
+	return t.UnixNano() / 1000
 }

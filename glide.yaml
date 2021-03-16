@@ -1,28 +1,30 @@
 package: github.com/uber/jaeger-client-go
 import:
-- package: github.com/apache/thrift
-  version: 23d6746079d7b5fdb38214387c63f987e68a6d8f
-  subpackages:
-  - lib/go/thrift
 - package: github.com/opentracing/opentracing-go
-  version: 855519783f479520497c6b3445611b05fc42f009
+  version: ^1.2
   subpackages:
   - ext
-- package: golang.org/x/net
+  - log
+- package: github.com/crossdock/crossdock-go
+- package: github.com/uber/jaeger-lib
+  version: ^2.3.0
   subpackages:
-  - context
-- package: github.com/uber/tchannel-go
-  version: 3e3e53962cc103863e644ac84dcda5169ead0467
-  subpackages:
-  - atomic
-  - thrift
-  - thrift/gen-go/meta
-  - tnet
-  - trace/thrift/gen-go/tcollector
-  - typed
+  - metrics
+- package: github.com/pkg/errors
+  version: ~0.8.0
+- package: go.uber.org/zap
+  source: https://github.com/uber-go/zap.git
+  version: ^1
+- package: github.com/uber-go/atomic
+  version: ^1
+- package: github.com/prometheus/client_golang
+  version: 1.1
+- package: github.com/prometheus/procfs
+  version: 0.0.6
+testImport:
 - package: github.com/stretchr/testify
   subpackages:
   - assert
   - require
   - suite
-- package: github.com/crossdock/crossdock-go
+- package: github.com/golang/mock

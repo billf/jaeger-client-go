@@ -1,22 +1,16 @@
-// Copyright (c) 2016 Uber Technologies, Inc.
+// Copyright (c) 2017 Uber Technologies, Inc.
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
+// http://www.apache.org/licenses/LICENSE-2.0
 //
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package jaeger
 
@@ -25,6 +19,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -55,35 +51,62 @@ type Extractor interface {
 	Extract(carrier interface{}) (SpanContext, error)
 }
 
-type textMapPropagator struct {
-	tracer *tracer
+// TextMapPropagator is a combined Injector and Extractor for TextMap format
+type TextMapPropagator struct {
+	headerKeys  *HeadersConfig
+	metrics     Metrics
+	encodeValue func(string) string
+	decodeValue func(string) string
 }
 
-func newTextMapPropagator(tracer *tracer) *textMapPropagator {
-	return &textMapPropagator{tracer: tracer}
+// NewTextMapPropagator creates a combined Injector and Extractor for TextMap format
+func NewTextMapPropagator(headerKeys *HeadersConfig, metrics Metrics) *TextMapPropagator {
+	return &TextMapPropagator{
+		headerKeys: headerKeys,
+		metrics:    metrics,
+		encodeValue: func(val string) string {
+			return val
+		},
+		decodeValue: func(val string) string {
+			return val
+		},
+	}
 }
 
-type httpHeaderPropagator struct {
-	tracer *tracer
+// NewHTTPHeaderPropagator creates a combined Injector and Extractor for HTTPHeaders format
+func NewHTTPHeaderPropagator(headerKeys *HeadersConfig, metrics Metrics) *TextMapPropagator {
+	return &TextMapPropagator{
+		headerKeys: headerKeys,
+		metrics:    metrics,
+		encodeValue: func(val string) string {
+			return url.QueryEscape(val)
+		},
+		decodeValue: func(val string) string {
+			// ignore decoding errors, cannot do anything about them
+			if v, err := url.QueryUnescape(val); err == nil {
+				return v
+			}
+			return val
+		},
+	}
 }
 
-func newHTTPHeaderPropagator(tracer *tracer) *httpHeaderPropagator {
-	return &httpHeaderPropagator{tracer: tracer}
-}
-
-type binaryPropagator struct {
-	tracer  *tracer
+// BinaryPropagator is a combined Injector and Extractor for Binary format
+type BinaryPropagator struct {
+	tracer  *Tracer
 	buffers sync.Pool
 }
 
-func newBinaryPropagator(tracer *tracer) *binaryPropagator {
-	return &binaryPropagator{
+// NewBinaryPropagator creates a combined Injector and Extractor for Binary format
+func NewBinaryPropagator(tracer *Tracer) *BinaryPropagator {
+	return &BinaryPropagator{
 		tracer:  tracer,
 		buffers: sync.Pool{New: func() interface{} { return &bytes.Buffer{} }},
 	}
 }
 
-func (p *textMapPropagator) Inject(
+// Inject implements Injector of TextMapPropagator
+func (p *TextMapPropagator) Inject(
 	sc SpanContext,
 	abstractCarrier interface{},
 ) error {
@@ -92,98 +115,66 @@ func (p *textMapPropagator) Inject(
 		return opentracing.ErrInvalidCarrier
 	}
 
-	textMapWriter.Set(TracerStateHeaderName, sc.String())
+	// Do not encode the string with trace context to avoid accidental double-encoding
+	// if people are using opentracing < 0.10.0. Our colon-separated representation
+	// of the trace context is already safe for HTTP headers.
+	textMapWriter.Set(p.headerKeys.TraceContextHeaderName, sc.String())
 	for k, v := range sc.baggage {
-		textMapWriter.Set(encodeBaggageKeyAsHeader(k), v)
+		safeKey := p.addBaggageKeyPrefix(k)
+		safeVal := p.encodeValue(v)
+		textMapWriter.Set(safeKey, safeVal)
 	}
 	return nil
 }
 
-func (p *textMapPropagator) Extract(abstractCarrier interface{}) (SpanContext, error) {
+// Extract implements Extractor of TextMapPropagator
+func (p *TextMapPropagator) Extract(abstractCarrier interface{}) (SpanContext, error) {
 	textMapReader, ok := abstractCarrier.(opentracing.TextMapReader)
 	if !ok {
 		return emptyContext, opentracing.ErrInvalidCarrier
 	}
 	var ctx SpanContext
 	var baggage map[string]string
-	err := textMapReader.ForeachKey(func(key, value string) error {
-		if key == TracerStateHeaderName {
+	err := textMapReader.ForeachKey(func(rawKey, value string) error {
+		key := strings.ToLower(rawKey) // TODO not necessary for plain TextMap
+		if key == p.headerKeys.TraceContextHeaderName {
 			var err error
-			if ctx, err = ContextFromString(value); err != nil {
+			safeVal := p.decodeValue(value)
+			if ctx, err = ContextFromString(safeVal); err != nil {
 				return err
 			}
-		} else if strings.HasPrefix(key, TraceBaggageHeaderPrefix) {
+		} else if key == p.headerKeys.JaegerDebugHeader {
+			ctx.debugID = p.decodeValue(value)
+		} else if key == p.headerKeys.JaegerBaggageHeader {
 			if baggage == nil {
 				baggage = make(map[string]string)
 			}
-			dk := decodeBaggageHeaderKey(key)
-			baggage[dk] = value
+			for k, v := range p.parseCommaSeparatedMap(value) {
+				baggage[k] = v
+			}
+		} else if strings.HasPrefix(key, p.headerKeys.TraceBaggageHeaderPrefix) {
+			if baggage == nil {
+				baggage = make(map[string]string)
+			}
+			safeKey := p.removeBaggageKeyPrefix(key)
+			safeVal := p.decodeValue(value)
+			baggage[safeKey] = safeVal
 		}
 		return nil
 	})
 	if err != nil {
-		p.tracer.metrics.DecodingErrors.Inc(1)
+		p.metrics.DecodingErrors.Inc(1)
 		return emptyContext, err
 	}
-	if ctx.traceID == 0 {
+	if !ctx.traceID.IsValid() && ctx.debugID == "" && len(baggage) == 0 {
 		return emptyContext, opentracing.ErrSpanContextNotFound
 	}
 	ctx.baggage = baggage
 	return ctx, nil
 }
 
-func (p *httpHeaderPropagator) Inject(
-	sc SpanContext,
-	abstractCarrier interface{},
-) error {
-	textMapWriter, ok := abstractCarrier.(opentracing.TextMapWriter)
-	if !ok {
-		return opentracing.ErrInvalidCarrier
-	}
-
-	textMapWriter.Set(TracerStateHeaderName, sc.String())
-	for k, v := range sc.baggage {
-		safeKey := encodeBaggageKeyAsHeader(k)
-		textMapWriter.Set(safeKey, v)
-	}
-	return nil
-}
-
-func (p *httpHeaderPropagator) Extract(abstractCarrier interface{}) (SpanContext, error) {
-	textMapReader, ok := abstractCarrier.(opentracing.TextMapReader)
-	if !ok {
-		return emptyContext, opentracing.ErrInvalidCarrier
-	}
-	var ctx SpanContext
-	var baggage map[string]string
-	err := textMapReader.ForeachKey(func(key, value string) error {
-		lowerCaseKey := strings.ToLower(key)
-		if lowerCaseKey == TracerStateHeaderName {
-			var err error
-			if ctx, err = ContextFromString(value); err != nil {
-				return err
-			}
-		} else if strings.HasPrefix(lowerCaseKey, TraceBaggageHeaderPrefix) {
-			if baggage == nil {
-				baggage = make(map[string]string)
-			}
-			dk := decodeBaggageHeaderKey(lowerCaseKey)
-			baggage[dk] = value
-		}
-		return nil
-	})
-	if err != nil {
-		p.tracer.metrics.DecodingErrors.Inc(1)
-		return emptyContext, err
-	}
-	if ctx.traceID == 0 {
-		return emptyContext, opentracing.ErrSpanContextNotFound
-	}
-	ctx.baggage = baggage
-	return ctx, nil
-}
-
-func (p *binaryPropagator) Inject(
+// Inject implements Injector of BinaryPropagator
+func (p *BinaryPropagator) Inject(
 	sc SpanContext,
 	abstractCarrier interface{},
 ) error {
@@ -202,7 +193,7 @@ func (p *binaryPropagator) Inject(
 	if err := binary.Write(carrier, binary.BigEndian, sc.parentID); err != nil {
 		return err
 	}
-	if err := binary.Write(carrier, binary.BigEndian, sc.flags); err != nil {
+	if err := binary.Write(carrier, binary.BigEndian, sc.samplingState.flags()); err != nil {
 		return err
 	}
 
@@ -224,12 +215,14 @@ func (p *binaryPropagator) Inject(
 	return nil
 }
 
-func (p *binaryPropagator) Extract(abstractCarrier interface{}) (SpanContext, error) {
+// Extract implements Extractor of BinaryPropagator
+func (p *BinaryPropagator) Extract(abstractCarrier interface{}) (SpanContext, error) {
 	carrier, ok := abstractCarrier.(io.Reader)
 	if !ok {
 		return emptyContext, opentracing.ErrInvalidCarrier
 	}
 	var ctx SpanContext
+	ctx.samplingState = &samplingState{}
 
 	if err := binary.Read(carrier, binary.BigEndian, &ctx.traceID); err != nil {
 		return emptyContext, opentracing.ErrSpanContextCorrupted
@@ -240,9 +233,12 @@ func (p *binaryPropagator) Extract(abstractCarrier interface{}) (SpanContext, er
 	if err := binary.Read(carrier, binary.BigEndian, &ctx.parentID); err != nil {
 		return emptyContext, opentracing.ErrSpanContextCorrupted
 	}
-	if err := binary.Read(carrier, binary.BigEndian, &ctx.flags); err != nil {
+
+	var flags byte
+	if err := binary.Read(carrier, binary.BigEndian, &flags); err != nil {
 		return emptyContext, opentracing.ErrSpanContextCorrupted
 	}
+	ctx.samplingState.setFlags(flags)
 
 	// Handle the baggage items
 	var numBaggage int32
@@ -281,14 +277,37 @@ func (p *binaryPropagator) Extract(abstractCarrier interface{}) (SpanContext, er
 	return ctx, nil
 }
 
-// Converts a baggage item key into an http header format,
-// by prepending TraceBaggageHeaderPrefix and encoding the key string
-func encodeBaggageKeyAsHeader(key string) string {
-	// TODO encodeBaggageKeyAsHeader add caching and escaping
-	return fmt.Sprintf("%v%v", TraceBaggageHeaderPrefix, key)
+// Converts a comma separated key value pair list into a map
+// e.g. key1=value1, key2=value2, key3 = value3
+// is converted to map[string]string { "key1" : "value1",
+//                                     "key2" : "value2",
+//                                     "key3" : "value3" }
+func (p *TextMapPropagator) parseCommaSeparatedMap(value string) map[string]string {
+	baggage := make(map[string]string)
+	value, err := url.QueryUnescape(value)
+	if err != nil {
+		log.Printf("Unable to unescape %s, %v", value, err)
+		return baggage
+	}
+	for _, kvpair := range strings.Split(value, ",") {
+		kv := strings.Split(strings.TrimSpace(kvpair), "=")
+		if len(kv) == 2 {
+			baggage[kv[0]] = kv[1]
+		} else {
+			log.Printf("Malformed value passed in for %s", p.headerKeys.JaegerBaggageHeader)
+		}
+	}
+	return baggage
 }
 
-func decodeBaggageHeaderKey(key string) string {
+// Converts a baggage item key into an http header format,
+// by prepending TraceBaggageHeaderPrefix and encoding the key string
+func (p *TextMapPropagator) addBaggageKeyPrefix(key string) string {
+	// TODO encodeBaggageKeyAsHeader add caching and escaping
+	return fmt.Sprintf("%v%v", p.headerKeys.TraceBaggageHeaderPrefix, key)
+}
+
+func (p *TextMapPropagator) removeBaggageKeyPrefix(key string) string {
 	// TODO decodeBaggageHeaderKey add caching and escaping
-	return key[len(TraceBaggageHeaderPrefix):]
+	return key[len(p.headerKeys.TraceBaggageHeaderPrefix):]
 }

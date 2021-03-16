@@ -1,16 +1,31 @@
+// Copyright (c) 2017 Uber Technologies, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 
 	"github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/crossdock/common"
+	"github.com/uber/jaeger-client-go/crossdock/log"
 	"github.com/uber/jaeger-client-go/crossdock/thrift/tracetest"
 )
 
@@ -21,7 +36,7 @@ func TestServerJSON(t *testing.T) {
 		jaeger.NewNullReporter())
 	defer tCloser.Close()
 
-	s := &Server{HostPortHTTP: "127.0.0.1:0", HostPortTChannel: "127.0.0.1:0", Tracer: tracer}
+	s := &Server{HostPortHTTP: "127.0.0.1:0", Tracer: tracer}
 	err := s.Start()
 	require.NoError(t, err)
 	defer s.Close()
@@ -37,8 +52,8 @@ func TestServerJSON(t *testing.T) {
 		Downstream: &tracetest.Downstream{
 			ServiceName: "go",
 			Host:        "localhost",
-			Port:        s.GetPortTChannel(),
-			Transport:   tracetest.Transport_TCHANNEL,
+			Port:        s.GetPortHTTP(),
+			Transport:   tracetest.Transport_HTTP,
 		},
 	}
 
@@ -46,7 +61,7 @@ func TestServerJSON(t *testing.T) {
 	result, err := common.PostJSON(context.Background(), url, req)
 
 	require.NoError(t, err)
-	fmt.Printf("response=%+v\n", &result)
+	log.Printf("response=%+v", &result)
 }
 
 func TestObserveSpan(t *testing.T) {
@@ -66,7 +81,7 @@ func TestObserveSpan(t *testing.T) {
 	s, err := observeSpan(ctx, tracer)
 	assert.NoError(t, err)
 	assert.True(t, s.Sampled)
-	traceID := fmt.Sprintf("%x", span.Context().(jaeger.SpanContext).TraceID())
+	traceID := span.Context().(jaeger.SpanContext).TraceID().String()
 	assert.Equal(t, traceID, s.TraceId)
 	assert.Equal(t, "xyz", s.Baggage)
 }

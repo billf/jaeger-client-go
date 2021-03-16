@@ -1,3 +1,17 @@
+// Copyright (c) 2017 Uber Technologies, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package jaeger
 
 import (
@@ -6,8 +20,8 @@ import (
 )
 
 func TestHeaderConstants(t *testing.T) {
-	if TracerStateHeaderName != strings.ToLower(TracerStateHeaderName) {
-		t.Errorf("TracerStateHeaderName is not lower-case: %+v", TracerStateHeaderName)
+	if TraceContextHeaderName != strings.ToLower(TraceContextHeaderName) {
+		t.Errorf("TraceContextHeaderName is not lower-case: %+v", TraceContextHeaderName)
 	}
 	if TraceBaggageHeaderPrefix != strings.ToLower(TraceBaggageHeaderPrefix) {
 		t.Errorf("TraceBaggageHeaderPrefix is not lower-case: %+v", TraceBaggageHeaderPrefix)

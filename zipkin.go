@@ -1,3 +1,17 @@
+// Copyright (c) 2017 Uber Technologies, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package jaeger
 
 import (
@@ -26,7 +40,7 @@ type InjectableZipkinSpan interface {
 }
 
 type zipkinPropagator struct {
-	tracer *tracer
+	tracer *Tracer
 }
 
 func (p *zipkinPropagator) Inject(
@@ -38,10 +52,10 @@ func (p *zipkinPropagator) Inject(
 		return opentracing.ErrInvalidCarrier
 	}
 
-	carrier.SetTraceID(ctx.TraceID())
-	carrier.SetSpanID(ctx.SpanID())
-	carrier.SetParentID(ctx.ParentID())
-	carrier.SetFlags(ctx.flags)
+	carrier.SetTraceID(ctx.TraceID().Low) // TODO this cannot work with 128bit IDs
+	carrier.SetSpanID(uint64(ctx.SpanID()))
+	carrier.SetParentID(uint64(ctx.ParentID()))
+	carrier.SetFlags(ctx.samplingState.flags())
 	return nil
 }
 
@@ -54,9 +68,10 @@ func (p *zipkinPropagator) Extract(abstractCarrier interface{}) (SpanContext, er
 		return emptyContext, opentracing.ErrSpanContextNotFound
 	}
 	var ctx SpanContext
-	ctx.traceID = carrier.TraceID()
-	ctx.spanID = carrier.SpanID()
-	ctx.parentID = carrier.ParentID()
-	ctx.flags = carrier.Flags()
+	ctx.traceID.Low = carrier.TraceID()
+	ctx.spanID = SpanID(carrier.SpanID())
+	ctx.parentID = SpanID(carrier.ParentID())
+	ctx.samplingState = &samplingState{}
+	ctx.samplingState.setFlags(carrier.Flags())
 	return ctx, nil
 }
